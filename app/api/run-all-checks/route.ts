@@ -25,6 +25,7 @@ function initializeFirebaseAdmin() {
 
 // --- O "Motor" (Está igual) ---
 async function fetchPageSpeedScores(url: string) {
+  // ... (código da função fetchPageSpeedScores igual ao anterior) ...
   const apiKey = process.env.PAGESPEED_API_KEY;
   if (!apiKey) throw new Error('PAGESPEED_API_KEY is not defined');
 
@@ -77,6 +78,7 @@ export async function GET(req: NextRequest) {
     const updatePromises: Promise<void>[] = [];
 
     sitesSnapshot.forEach((docSnap) => {
+      // ... (código do forEach igual ao anterior) ...
       const siteData = docSnap.data();
       const siteUrl = siteData.url;
       const siteId = docSnap.id;
