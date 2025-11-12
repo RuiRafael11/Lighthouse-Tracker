@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
-import * as admin from 'firebase-admin'; // <--- USAR A BIBLIOTECA ADMIN
+import * as admin from 'firebase-admin';
 
-// --- CONFIGURAÇÃO DO ADMIN SDK ---
+// --- A Função de Inicialização (Está igual) ---
 // Esta função só corre uma vez para inicializar o admin
 function initializeFirebaseAdmin() {
   try {
@@ -18,23 +18,12 @@ function initializeFirebaseAdmin() {
     }
     return admin.firestore(); // Devolve a ligação à BD de admin
   } catch (error: any) {
-    if (error.code === 'ENOENT' || error.name === 'SyntaxError') {
-      // Isto é um fallback para o ambiente local (npm run dev)
-      // se quiseres criar um ficheiro serviceAccountKey.json
-      console.log('Chave da Vercel não encontrada, a tentar fallback local...');
-      // ... (podes ignorar isto por agora, só importa para a Vercel)
-    }
-    // Se a inicialização falhar, relança o erro
+    // Se a chave não existir (ex: build) ou for inválida, dá erro
     throw new Error('Falha ao inicializar o Firebase Admin: ' + error.message);
   }
 }
 
-// Inicializa o admin e obtém a ligação à BD
-const db = initializeFirebaseAdmin();
-// --- FIM DA CONFIGURAÇÃO DO ADMIN ---
-
-
-// Esta função (o "motor") é a mesma de antes
+// --- O "Motor" (Está igual) ---
 async function fetchPageSpeedScores(url: string) {
   const apiKey = process.env.PAGESPEED_API_KEY;
   if (!apiKey) throw new Error('PAGESPEED_API_KEY is not defined');
@@ -56,26 +45,29 @@ async function fetchPageSpeedScores(url: string) {
     performance: Math.round(lighthouse.categories.performance.score * 100),
     accessibility: Math.round(lighthouse.categories.accessibility.score * 100),
     seo: Math.round(lighthouse.categories.seo.score * 100),
-    lastChecked: new Date(), // Usar new Date() (padrão do servidor)
+    lastChecked: new Date(),
   };
 }
 
 
-// Esta é a função que o "despertador" (Cron) vai chamar
+// --- O "Despertador" (MUDANÇA AQUI) ---
 export async function GET(req: NextRequest) {
+  // 1. Verificar o segredo
   const { searchParams } = req.nextUrl;
   if (searchParams.get('secret') !== process.env.CRON_SECRET) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
   try {
+    // 2. SÓ AGORA é que inicializamos a base de dados!
+    // Esta linha estava fora, agora está DENTRO.
+    const db = initializeFirebaseAdmin();
+
     let sitesProcessed = 0;
     
-    // Agora, esta query usa os poderes de ADMIN
     const sitesSnapshot = await db.collection('sites').get();
 
     if (sitesSnapshot.empty) {
-      // Se a coleção 'sites' estiver mesmo vazia
       return NextResponse.json({
         message: 'Cron job ran, but no sites found in database.',
         sitesProcessed: 0,
@@ -92,7 +84,6 @@ export async function GET(req: NextRequest) {
       const updatePromise = (async () => {
         try {
           const scores = await fetchPageSpeedScores(siteUrl);
-          // O SDK Admin usa .update() diretamente na referência do documento
           await db.collection('sites').doc(siteId).update(scores);
           sitesProcessed++;
         } catch (error) {
