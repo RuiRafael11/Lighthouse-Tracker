@@ -1,218 +1,257 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAuth } from '@/lib/AuthContext';
-import { db } from '@/lib/firebase';
-import { collection, addDoc, query, getDocs } from 'firebase/firestore';
-import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend } from 'chart.js';
+import { useState, useEffect, FormEvent } from 'react';
+import { useAuth } from '@/lib/AuthContext'; // O Copilot criou isto
+import { db } from '@/lib/firebase'; // O Copilot criou isto
+import {
+  collection,
+  addDoc,
+  query,
+  where,
+  onSnapshot,
+  Timestamp, // Importar Timestamp
+} from 'firebase/firestore';
 import { Bar } from 'react-chartjs-2';
+import {
+  Chart as ChartJS,
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend,
+} from 'chart.js';
 
-// Register Chart.js components
-ChartJS.register(CategoryScale, LinearScale, BarElement, Title, Tooltip, Legend);
+// Registar os componentes do Chart.js
+ChartJS.register(
+  CategoryScale,
+  LinearScale,
+  BarElement,
+  Title,
+  Tooltip,
+  Legend
+);
 
-// Force dynamic rendering
-export const dynamic = 'force-dynamic';
+// --- NOVA DEFINIÇÃO DE TIPO ---
+// Vamos definir como é um objeto 'Site' na nossa base de dados
+interface SiteData {
+  id: string;
+  url: string;
+  createdAt: Timestamp;
+  userId: string;
+  // Estes são os novos campos que vêm do nosso "motor"
+  performance?: number;
+  accessibility?: number;
+  seo?: number;
+}
 
-export default function Dashboard() {
-  const { user, loading, signInWithGoogle, logout } = useAuth();
-  const router = useRouter();
+export default function DashboardPage() {
+  const { user, logout } = useAuth();
   const [url, setUrl] = useState('');
-  const [sites, setSites] = useState<any[]>([]);
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState('');
-  const [success, setSuccess] = useState('');
+  
+  // --- NOVOS ESTADOS ---
+  const [loading, setLoading] = useState(false); // Para mostrar um feedback de "a carregar..."
+  const [error, setError] = useState<string | null>(null); // Para mostrar erros
+  const [message, setMessage] = useState(''); // Para mostrar mensagens de sucesso
 
-  useEffect(() => {
-    if (!loading && !user) {
-      router.push('/login');
-    }
-  }, [user, loading, router]);
+  // Estado para guardar os sites e os dados do gráfico
+  const [sites, setSites] = useState<SiteData[]>([]);
+  const [chartData, setChartData] = useState({
+    labels: [] as string[],
+    datasets: [
+      {
+        label: 'Performance Score',
+        data: [] as number[],
+        backgroundColor: 'rgba(53, 162, 235, 0.5)',
+      },
+    ],
+  });
 
+  // Efeito para ir buscar os sites do utilizador ao Firestore em tempo real
   useEffect(() => {
     if (user) {
-      fetchSites();
+      const q = query(collection(db, 'sites'), where('userId', '==', user.uid));
+      
+      const unsubscribe = onSnapshot(q, (querySnapshot) => {
+        const sitesData: SiteData[] = [];
+        const labels: string[] = [];
+        const performanceData: number[] = [];
+
+        querySnapshot.forEach((doc) => {
+          const data = doc.data() as Omit<SiteData, 'id'>;
+          const site = { id: doc.id, ...data };
+          sitesData.push(site);
+
+          // Limitar o URL a 20 caracteres para o gráfico
+          const shortUrl = site.url.replace('https://', '').replace('www.', '').substring(0, 20);
+          labels.push(shortUrl);
+          
+          // Adicionar o score de performance ao gráfico (se existir)
+          if (site.performance) {
+            performanceData.push(site.performance);
+          } else {
+            performanceData.push(0); // Pôr 0 se ainda não tiver score
+          }
+        });
+
+        setSites(sitesData);
+        setChartData({
+          labels: labels,
+          datasets: [
+            {
+              label: 'Performance Score',
+              data: performanceData,
+              backgroundColor: 'rgba(53, 162, 235, 0.5)',
+            },
+          ],
+        });
+      });
+
+      // Limpar o listener quando o componente for desmontado
+      return () => unsubscribe();
     }
   }, [user]);
 
-  const fetchSites = async () => {
-    try {
-      const q = query(collection(db, 'sites'));
-      const querySnapshot = await getDocs(q);
-      const sitesData = querySnapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      setSites(sitesData);
-    } catch (error) {
-      console.error('Error fetching sites:', error);
-    }
-  };
-
-  const handleSubmit = async (e: React.FormEvent) => {
+  // --- ESTA É A FUNÇÃO ATUALIZADA ---
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    setError('');
-    setSuccess('');
-    setSubmitting(true);
+    
+    if (!user) {
+      setError('You must be logged in.');
+      return;
+    }
+
+    setLoading(true); // 1. Começa o loading
+    setError(null);
+    setMessage('');
+
+    let scores = {}; // Objeto para guardar os scores
 
     try {
-      // Validate URL
-      new URL(url);
-
-      // Add to Firestore
-      await addDoc(collection(db, 'sites'), {
-        url,
-        createdAt: new Date().toISOString(),
-        userId: user?.uid,
+      // 2. Chamar o nosso "motor" (a API que criámos)
+      const response = await fetch('/api/run-check', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ url }),
       });
 
-      setSuccess('URL added successfully!');
-      setUrl('');
-      fetchSites(); // Refresh the list
-    } catch (err) {
-      if (err instanceof TypeError) {
-        setError('Please enter a valid URL');
-      } else {
-        setError('Failed to add URL. Please try again.');
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to run PageSpeed check');
       }
-      console.error('Error adding URL:', err);
+
+      // 3. Obter os scores da resposta da API
+      const data = await response.json();
+      scores = data.scores; // ex: { performance: 90, accessibility: 95, seo: 100 }
+      setMessage('Scores fetched successfully! Saving to database...');
+      
+      // 4. Guardar TUDO (URL + Scores) no Firestore
+      await addDoc(collection(db, 'sites'), {
+        url: url,
+        createdAt: new Date(), // Usar new Date()
+        userId: user.uid,
+        ...scores, // Adiciona performance, accessibility, e seo ao documento
+      });
+
+      setMessage('URL added and scores saved!');
+      setUrl(''); // Limpar o formulário
+
+    } catch (err: any) {
+      console.error(err);
+      setError(err.message);
     } finally {
-      setSubmitting(false);
+      setLoading(false); // 5. Para o loading (quer dê erro ou sucesso)
     }
   };
-
-  const handleLogout = async () => {
-    try {
-      await logout();
-      router.push('/');
-    } catch (error) {
-      console.error('Logout error:', error);
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="flex min-h-screen items-center justify-center">
-        <div className="text-xl">Loading...</div>
-      </div>
-    );
-  }
 
   if (!user) {
-    return null;
+    return <p>Loading user...</p>; // Ou reencaminhar para /login
   }
 
-  // Chart data
-  const chartData = {
-    labels: sites.map((_, index) => `Site ${index + 1}`),
-    datasets: [
-      {
-        label: 'Sites Count',
-        data: sites.map((_, index) => index + 1),
-        backgroundColor: 'rgba(59, 130, 246, 0.5)',
-        borderColor: 'rgb(59, 130, 246)',
-        borderWidth: 1,
-      },
-    ],
-  };
-
-  const chartOptions = {
-    responsive: true,
-    plugins: {
-      legend: {
-        position: 'top' as const,
-      },
-      title: {
-        display: true,
-        text: 'Sites Overview',
-      },
-    },
-  };
-
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white shadow">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 flex justify-between items-center">
-          <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-          <div className="flex items-center gap-4">
-            <span className="text-sm text-gray-600">{user.email}</span>
-            <button
-              onClick={handleLogout}
-              className="bg-red-600 text-white px-4 py-2 rounded-lg hover:bg-red-700 transition-colors"
-            >
-              Logout
-            </button>
-          </div>
+    <div className="container mx-auto p-4">
+      <div className="flex justify-between items-center mb-4">
+        <h1 className="text-2xl font-bold">Dashboard</h1>
+        <div>
+          <span className="mr-4">{user.email}</span>
+          <button
+            onClick={logout}
+            className="bg-red-500 hover:bg-red-700 text-white font-bold py-2 px-4 rounded"
+          >
+            Logout
+          </button>
         </div>
-      </header>
+      </div>
 
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-        {/* Add URL Form */}
-        <div className="bg-white shadow rounded-lg p-6 mb-8">
-          <h2 className="text-xl font-semibold mb-4">Add New URL</h2>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label htmlFor="url" className="block text-sm font-medium text-gray-700 mb-2">
-                Website URL
-              </label>
-              <input
-                type="text"
-                id="url"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder="https://example.com"
-                className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                required
-              />
-            </div>
-            {error && (
-              <div className="text-red-600 text-sm">{error}</div>
-            )}
-            {success && (
-              <div className="text-green-600 text-sm">{success}</div>
-            )}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        {/* --- Formulário Atualizado --- */}
+        <div>
+          <h2 className="text-xl font-semibold mb-2">Add New URL</h2>
+          <form onSubmit={handleSubmit} className="bg-white p-4 shadow rounded">
+            <label htmlFor="url" className="block text-sm font-medium text-gray-700">
+              Website URL
+            </label>
+            <input
+              type="url"
+              id="url"
+              value={url}
+              onChange={(e) => setUrl(e.target.value)}
+              placeholder="https://example.com"
+              required
+              className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500"
+            />
             <button
               type="submit"
-              disabled={submitting}
-              className="bg-blue-600 text-white px-6 py-2 rounded-lg hover:bg-blue-700 transition-colors disabled:bg-gray-400 disabled:cursor-not-allowed"
+              disabled={loading} // Desativar o botão enquanto está a carregar
+              className="mt-4 w-full bg-blue-500 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded disabled:bg-gray-400"
             >
-              {submitting ? 'Adding...' : 'Add URL'}
+              {loading ? 'Checking...' : 'Add and Run Check'}
             </button>
+            {/* Mostrar mensagens de feedback */}
+            {message && <p className="text-green-500 mt-2">{message}</p>}
+            {error && <p className="text-red-500 mt-2">{error}</p>}
           </form>
         </div>
 
-        {/* Chart */}
-        <div className="bg-white shadow rounded-lg p-6 mb-8">
-          <h2 className="text-xl font-semibold mb-4">Analytics</h2>
-          <div className="max-w-2xl mx-auto">
-            <Bar data={chartData} options={chartOptions} />
+        {/* --- O Gráfico (agora vai-se atualizar com os scores) --- */}
+        <div>
+          <h2 className="text-xl font-semibold mb-2">Analytics</h2>
+          <div className="bg-white p-4 shadow rounded">
+            <h3 className="font-medium mb-2">Site Performance Overview</h3>
+            {sites.length > 0 ? (
+              <Bar options={{ responsive: true }} data={chartData} />
+            ) : (
+              <p>Add a site to see analytics.</p>
+            )}
           </div>
         </div>
+      </div>
 
-        {/* Sites List */}
-        <div className="bg-white shadow rounded-lg p-6">
-          <h2 className="text-xl font-semibold mb-4">Your Sites</h2>
-          {sites.length === 0 ? (
-            <p className="text-gray-600">No sites added yet. Add your first URL above!</p>
-          ) : (
-            <ul className="divide-y divide-gray-200">
+       {/* --- Lista de Sites (opcional, mas útil) --- */}
+       <div className="mt-8">
+        <h2 className="text-xl font-semibold mb-2">Your Monitored Sites</h2>
+        <div className="bg-white p-4 shadow rounded">
+          {sites.length > 0 ? (
+            <ul>
               {sites.map((site) => (
-                <li key={site.id} className="py-3">
-                  <a
-                    href={site.url}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-blue-600 hover:underline"
-                  >
-                    {site.url}
-                  </a>
-                  <span className="text-sm text-gray-500 ml-4">
-                    Added: {new Date(site.createdAt).toLocaleDateString()}
-                  </span>
+                <li key={site.id} className="border-b last:border-b-0 py-2 flex justify-between">
+                  <span>{site.url}</span>
+                  <div className='flex gap-4'>
+                    <span title='Performance'>🚀 {site.performance || 'N/A'}</span>
+                    <span title='Accessibility'>♿ {site.accessibility || 'N/A'}</span>
+                    <span title='SEO'>📈 {site.seo || 'N/A'}</span>
+                  </div>
                 </li>
               ))}
             </ul>
+          ) : (
+            <p>No sites added yet.</p>
           )}
         </div>
-      </main>
+       </div>
+
     </div>
   );
 }

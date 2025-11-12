@@ -1,0 +1,9 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [
+    {
+      "path": "/api/run-all-checks?secret=EstaeA-minha-Chave-Secreta-12345",
+      "schedule": "0 3 * * *"
+    }
+  ]
+}
